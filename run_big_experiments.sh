@@ -41,8 +41,12 @@ for seed in 1 2 3; do
 done
 
 # 4. Gain vs density analysis
-echo "[5/5] Generating gain vs density analysis..."
+echo "[5/6] Generating gain vs density analysis..."
 python scripts/gain_vs_density.py --out ${OUTPUT_DIR}/density --R 4
+
+# 5. HERO figure - the main visualization
+echo "[6/6] Generating HERO space-time figure..."
+python scripts/hero_spacetime.py --steps 800 --n_robots 40 --drop 0.3 --out ${OUTPUT_DIR}/hero
 
 # Generate summary report
 echo ""

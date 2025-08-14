@@ -121,12 +121,19 @@ class BroadcastGain:
         # Fuse (coordinate-wise median or mean) over freshest packets within TTL
         new_g = np.empty(self.n, dtype=float)
         for i in range(self.n):
-            # keep only packets within TTL
-            keep = [p for p in self.rx_p[i] if (ncycle - p[2]) < self.ttl]
-            if len(keep) == 0:
+            # Keep only packets within TTL, then take the FRESHEST per sender j
+            keep = [p for p in self.rx_p[i] if (ncycle - p[2]) < self.ttl]  # (j, payload, cycle)
+            if not keep:
                 new_g[i] = self.g[i]  # hold previous
                 continue
-            arr = np.stack([k[1] for k in keep], axis=0)  # shape (m,1|2)
+            
+            # Deduplicate: keep only the freshest packet per source
+            latest = {}
+            for (j, payload, cyc) in keep:
+                if (j not in latest) or (cyc > latest[j][1]):
+                    latest[j] = (payload, cyc)
+            
+            arr = np.stack([v[0] for v in latest.values()], axis=0)  # shape (m, 1|2)
             if self.one_byte:
                 diff = self.dequantize(arr[:,0])
                 if self.fuse == "median":
@@ -146,5 +153,10 @@ class BroadcastGain:
                     p_bar = float(pvals.mean()); tau_bar = float(tvals.mean())
                 g_i = 1.0 + self.alpha * (p_bar - tau_bar)
             new_g[i] = np.clip(g_i, self.g_min, self.g_max)
+        
+        # Prune mailboxes to prevent unbounded growth
+        for i in range(self.n):
+            self.rx_p[i] = [p for p in self.rx_p[i] if (ncycle - p[2]) < self.ttl]
+        
         self.g = new_g
         return self.g.copy()
