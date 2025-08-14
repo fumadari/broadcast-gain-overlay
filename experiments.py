@@ -9,6 +9,18 @@ from overlay import BroadcastGain
 
 # --------- Helpers ---------
 
+def ghost_freeflow_cde(intents_history, realized_history):
+    """
+    Return intent-based free-flow CDE:
+      CDE = (blocked_intents) / (intended_moves)
+    Since in free-flow every 'move' would succeed, this equals
+      (desired - realized) / desired
+    which is the per-step analog of (t_total - t_free) / t_total.
+    """
+    desired = sum((np.array(h) == "move").sum() for h in intents_history)
+    realized = sum(np.array(h).sum() for h in realized_history)
+    return (desired - realized) / max(1, desired)
+
 def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
     """
     Runs a single episode and returns episode-level metrics and time series for optional plotting.
@@ -48,6 +60,7 @@ def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
 
     intents_history = []
     realized_history = []
+    positions_hist = []
 
     # init gains to 1
     g = np.ones(env.n_robots)
@@ -105,6 +118,9 @@ def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
 
         realized, shared_reward, info = env.step(intents)
         realized_history.append(realized.tolist())
+        
+        # Track positions
+        positions_hist.append(np.array([[rb.r, rb.c] for rb in env.robots], dtype=int))
 
         # Update TD-like error (EWMA baseline over shared reward)
         prev_td = td_est
@@ -122,10 +138,8 @@ def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
             positions = np.array([[rb.r, rb.c] for rb in env.robots], dtype=int)
             g = overlay.broadcast_and_fuse(positions)
 
-    # Intent-based free-flow CDE proxy: fraction of intended "move" actions blocked by arbitration.
-    desired = sum((np.array(h)=="move").sum() for h in intents_history)
-    realized_mv = sum(np.array(h).sum() for h in realized_history)
-    cde = (desired - realized_mv) / max(1, desired)
+    # Use explicit ghost free-flow CDE calculation
+    cde = ghost_freeflow_cde(intents_history, realized_history)
 
     ret = np.sum(rewards)  # episodic return (sum of shared rewards)
     td_var = float(np.var(td_errs))
@@ -146,6 +160,7 @@ def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
         "intents": intents_history,
         "realized": realized_history,
         "g_history": g_history,
+        "positions": positions_hist,
     }
     return out
 
