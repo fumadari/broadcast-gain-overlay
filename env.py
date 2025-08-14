@@ -166,5 +166,36 @@ class PlusCorridorEnv:
         }
         return realized, shared_reward, info
 
+    def step_freeflow(self, intents: List[str]):
+        """Like step(), but make every 'move' intent succeed (no exclusivity)."""
+        N = len(self.robots)
+        assert N == len(intents)
+        
+        realized = np.array([1 if a == "move" else 0 for a in intents], dtype=int)
+        targets = []
+        
+        for i, rb in enumerate(self.robots):
+            self._bounce_if_edge(rb)
+            if realized[i] == 1:
+                nr, nc = self._next_cell(rb)
+                if not self._within_corridor(nr, nc):
+                    # treat off-corridor as blocked even in free-flow
+                    nr, nc = rb.r, rb.c
+                    realized[i] = 0
+            else:
+                nr, nc = rb.r, rb.c
+            targets.append((nr, nc))
+        
+        # Apply movement for all movers (no collision checking)
+        for i, rb in enumerate(self.robots):
+            if realized[i] == 1:
+                rb.r, rb.c = targets[i]
+        
+        # Keep shared_reward semantics consistent with step()
+        shared_reward = realized.mean()
+        self.t += 1
+        
+        return realized, shared_reward, {}
+    
     def occupancy_mats(self):
         return np.array(self.row_occ, dtype=int), np.array(self.col_occ, dtype=int)

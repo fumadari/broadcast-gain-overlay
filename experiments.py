@@ -9,17 +9,32 @@ from overlay import BroadcastGain
 
 # --------- Helpers ---------
 
-def ghost_freeflow_cde(intents_history, realized_history):
+def ghost_freeflow_cde(intents_hist, realized_hist, env_seed, params):
     """
-    Return intent-based free-flow CDE:
-      CDE = (blocked_intents) / (intended_moves)
-    Since in free-flow every 'move' would succeed, this equals
-      (desired - realized) / desired
-    which is the per-step analog of (t_total - t_free) / t_total.
+    Replay the same intents in a ghost copy with no arbitration.
+    This gives us the true free-flow CDE aligned with DEEPFLEET's definition:
+    CDE = (free_flow_moves - actual_moves) / free_flow_moves
     """
-    desired = sum((np.array(h) == "move").sum() for h in intents_history)
-    realized = sum(np.array(h).sum() for h in realized_history)
-    return (desired - realized) / max(1, desired)
+    from env import PlusCorridorEnv
+    
+    # Create ghost environment with same initial conditions
+    ghost = PlusCorridorEnv(H=24, W=24, n_robots=params["n_robots"], seed=env_seed)
+    
+    desired = 0
+    realized_ff = 0
+    
+    # Replay all intents in free-flow mode
+    for intents in intents_hist:
+        r, _, _ = ghost.step_freeflow(intents)  # Everyone who intends "move" succeeds
+        desired += (np.array(intents) == "move").sum()
+        realized_ff += r.sum()
+    
+    # Get actual realized moves from the arbitrated run
+    realized_live = sum(np.array(h).sum() for h in realized_hist)
+    
+    # Fraction of time "blocked by others" ≈ (free-flow success - actual success)/free-flow success
+    # This matches DEEPFLEET's (t_total - t_free)/t_total
+    return (realized_ff - realized_live) / max(1, realized_ff)
 
 def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
     """
@@ -138,8 +153,8 @@ def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
             positions = np.array([[rb.r, rb.c] for rb in env.robots], dtype=int)
             g = overlay.broadcast_and_fuse(positions)
 
-    # Use explicit ghost free-flow CDE calculation
-    cde = ghost_freeflow_cde(intents_history, realized_history)
+    # Use explicit ghost free-flow CDE calculation with replay
+    cde = ghost_freeflow_cde(intents_history, realized_history, seed, params)
 
     ret = np.sum(rewards)  # episodic return (sum of shared rewards)
     td_var = float(np.var(td_errs))

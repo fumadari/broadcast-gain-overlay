@@ -8,15 +8,11 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from experiments import run_episode
 
-def manhattan_density(positions, R):
+def manhattan_density(P, R):
     """Calculate local density for each agent within Manhattan radius R"""
-    P = positions
-    n = len(P)
-    out = np.zeros(n, dtype=int)
-    for i in range(n):
-        d = np.abs(P[:,0] - P[i,0]) + np.abs(P[:,1] - P[i,1])
-        out[i] = (d <= R).sum() - 1  # exclude self
-    return out
+    # Vectorized computation for efficiency
+    d = np.abs(P[:, None, :] - P[None, :, :]).sum(-1)
+    return (d <= R).sum(1) - 1  # exclude self
 
 def main(out="results_density", R=4):
     out = Path(out)
@@ -27,26 +23,26 @@ def main(out="results_density", R=4):
     
     # Take only broadcast instants (cycle_len=4)
     G = np.stack(res["g_history"], axis=0)  # [cycles, n]
-    pos_per_cycle = res["positions"][::4]   # if cycle_len=4
+    P = np.array(res["positions"])[::4]      # positions each broadcast cycle
     
     # Ensure we have matching lengths
-    min_len = min(len(G), len(pos_per_cycle))
+    min_len = min(len(G), len(P))
     G = G[:min_len]
-    pos_per_cycle = pos_per_cycle[:min_len]
+    P = P[:min_len]
     
-    dens = np.stack([manhattan_density(p, R) for p in pos_per_cycle], axis=0)
+    D = np.stack([manhattan_density(p, R) for p in P], axis=0)  # [cycles, n]
     
     fig, ax = plt.subplots(figsize=(5.2, 3.8))
-    ax.scatter(dens.flatten(), G.flatten(), s=6, alpha=0.5)
+    ax.scatter(D.flatten(), G.flatten(), s=6, alpha=0.5)
     ax.set_xlabel(f"Local density (R={R})")
     ax.set_ylabel("g")
     ax.set_title("Broadcast-Gain vs Local Density (drop=0.3)")
     ax.grid(True, alpha=0.3)
     
     # Add trend line
-    z = np.polyfit(dens.flatten(), G.flatten(), 1)
+    z = np.polyfit(D.flatten(), G.flatten(), 1)
     p = np.poly1d(z)
-    x_trend = np.linspace(dens.min(), dens.max(), 100)
+    x_trend = np.linspace(D.min(), D.max(), 100)
     ax.plot(x_trend, p(x_trend), "r--", alpha=0.7, label=f"Trend: g = {z[0]:.3f}*density + {z[1]:.3f}")
     ax.legend()
     
@@ -54,7 +50,7 @@ def main(out="results_density", R=4):
     fig.savefig(out/"paper_figs_gain_vs_density.pdf", bbox_inches="tight")
     plt.close(fig)
     
-    print(f"Correlation coefficient: {np.corrcoef(dens.flatten(), G.flatten())[0,1]:.3f}")
+    print(f"Correlation coefficient: {np.corrcoef(D.flatten(), G.flatten())[0,1]:.3f}")
 
 if __name__ == "__main__":
     import argparse
