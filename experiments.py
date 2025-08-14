@@ -9,7 +9,7 @@ from overlay import BroadcastGain
 
 # --------- Helpers ---------
 
-def run_episode(seed, method, dropout, params):
+def run_episode(seed, method, dropout, params, drop_model="bernoulli"):
     """
     Runs a single episode and returns episode-level metrics and time series for optional plotting.
     method: one of {'no_comm','gain_mean','reward_broadcast','broadcast_gain','fixed_g_0.8',...}
@@ -26,7 +26,8 @@ def run_episode(seed, method, dropout, params):
     overlay = BroadcastGain(
         n_agents=env.n_robots, rng=rng, kappa=params["kappa"], beta=params["beta"],
         alpha=params["alpha"], g_min=params["g_min"], g_max=params["g_max"], cycle_len=cycle_len,
-        ttl_cycles=2, fuse=fuse, dropout=dropout, radius=params["radius"], one_byte=one_byte
+        ttl_cycles=2, fuse=fuse, dropout=dropout, radius=params["radius"], one_byte=one_byte,
+        drop_model=drop_model
     )
 
     # constant-g control
@@ -121,11 +122,9 @@ def run_episode(seed, method, dropout, params):
             positions = np.array([[rb.r, rb.c] for rb in env.robots], dtype=int)
             g = overlay.broadcast_and_fuse(positions)
 
-    # CDE analog: fraction of desired "move" intents that were blocked by arbitration
-    desired = 0; realized_mv = 0
-    for inf in range(len(realized_history)):
-        desired += (np.array(intents_history[inf])=="move").sum()
-        realized_mv += np.array(realized_history[inf]).sum()
+    # Intent-based free-flow CDE proxy: fraction of intended "move" actions blocked by arbitration.
+    desired = sum((np.array(h)=="move").sum() for h in intents_history)
+    realized_mv = sum(np.array(h).sum() for h in realized_history)
     cde = (desired - realized_mv) / max(1, desired)
 
     ret = np.sum(rewards)  # episodic return (sum of shared rewards)
@@ -146,13 +145,14 @@ def run_episode(seed, method, dropout, params):
         "col_occ": col_occ,
         "intents": intents_history,
         "realized": realized_history,
+        "g_history": g_history,
     }
     return out
 
 def run_grid(args):
     out_dir = Path(args.out); out_dir.mkdir(parents=True, exist_ok=True)
     seeds = [1,2,3] if args.mode=="quick" else [1,2,3,4,5]
-    drop_model = "bernoulli"
+    drop_model = args.drop_model
     dropouts = [0.0, 0.1, 0.3]
     methods = ["no_comm", "gain_mean", "reward_broadcast", "broadcast_gain"]
     params = dict(n_robots=20, steps=500, alpha=0.5, beta=0.2, kappa=0.5, g_min=0.5, g_max=1.5, radius=5)
@@ -163,7 +163,7 @@ def run_grid(args):
         for d in dropouts:
             for seed in seeds:
                 start = time.time()
-                res = run_episode(seed=seed, method=method, dropout=d, params=params)
+                res = run_episode(seed=seed, method=method, dropout=d, params=params, drop_model=drop_model)
                 dt = time.time()-start
                 rows.append({
                     "seed": seed, "method": method, "drop_model": drop_model, "dropout": d,
@@ -181,7 +181,12 @@ def run_grid(args):
     df.to_csv(out_dir/"main_results.csv", index=False)
 
     # Make plots
-    make_main_plots(df, out_dir)
+    make_main_plots(df, out_dir, suffix=drop_model)
+    # optional quick extras for the paper
+    alpha_beta_heatmap(out_dir, seeds, params, drop_model)
+    radius_ablation(out_dir, seeds, params, drop_model)
+    one_byte_tradeoff(out_dir, seeds, params, drop_model)
+    gain_distribution(out_dir, seeds, params, drop_model)
 
     # theory + robustness micro-plots
     plot_theory_varratio(out_dir)
@@ -195,7 +200,7 @@ def agg(df, metric, by=["method","dropout"]):
     g["ci95"] = 1.96 * g["std"] / np.sqrt(g["count"].clip(lower=1))
     return g
 
-def make_main_plots(df, out_dir: Path):
+def make_main_plots(df, out_dir: Path, suffix="bernoulli"):
     # Return vs Dropout
     g = agg(df, "return")
     fig, ax = plt.subplots(figsize=(6.4,4.2))
@@ -206,8 +211,8 @@ def make_main_plots(df, out_dir: Path):
     ax.set_xlabel("Dropout Rate"); ax.set_ylabel("Episodic Return")
     ax.set_title("Return vs Dropout (Bernoulli)")
     ax.grid(True, alpha=0.3); ax.legend(loc="best")
-    fig.savefig(out_dir/"return_vs_dropout_bernoulli.png", bbox_inches="tight", dpi=200)
-    fig.savefig(out_dir/"paper_figs_return_vs_dropout_bernoulli.pdf", bbox_inches="tight")
+    fig.savefig(out_dir/f"return_vs_dropout_{suffix}.png", bbox_inches="tight", dpi=200)
+    fig.savefig(out_dir/f"paper_figs_return_vs_dropout_{suffix}.pdf", bbox_inches="tight")
     plt.close(fig)
 
     # CDE vs Dropout
@@ -220,8 +225,8 @@ def make_main_plots(df, out_dir: Path):
     ax.set_xlabel("Dropout Rate"); ax.set_ylabel("CDE (fraction blocked intents)")
     ax.set_title("CDE vs Dropout (Bernoulli)")
     ax.grid(True, alpha=0.3); ax.legend(loc="best")
-    fig.savefig(out_dir/"cde_vs_dropout_bernoulli.png", bbox_inches="tight", dpi=200)
-    fig.savefig(out_dir/"paper_figs_cde_vs_dropout_bernoulli.pdf", bbox_inches="tight")
+    fig.savefig(out_dir/f"cde_vs_dropout_{suffix}.png", bbox_inches="tight", dpi=200)
+    fig.savefig(out_dir/f"paper_figs_cde_vs_dropout_{suffix}.pdf", bbox_inches="tight")
     plt.close(fig)
 
     # TD variance vs Dropout
@@ -234,8 +239,8 @@ def make_main_plots(df, out_dir: Path):
     ax.set_xlabel("Dropout Rate"); ax.set_ylabel("TD-like Error Variance")
     ax.set_title("TD-Error Variance vs Dropout (Bernoulli)")
     ax.grid(True, alpha=0.3); ax.legend(loc="best")
-    fig.savefig(out_dir/"tdvar_vs_dropout_bernoulli.png", bbox_inches="tight", dpi=200)
-    fig.savefig(out_dir/"paper_figs_tdvar_vs_dropout_bernoulli.pdf", bbox_inches="tight")
+    fig.savefig(out_dir/f"tdvar_vs_dropout_{suffix}.png", bbox_inches="tight", dpi=200)
+    fig.savefig(out_dir/f"paper_figs_tdvar_vs_dropout_{suffix}.pdf", bbox_inches="tight")
     plt.close(fig)
 
 def plot_space_time(row_occ, col_occ, out_dir: Path):
@@ -311,9 +316,75 @@ def write_report(df, out_dir: Path):
     lines.append(f"- TD‑var vs no_comm at 0.0: BG={gval('broadcast_gain',0.0,'td_var'):.4f} vs {gval('no_comm',0.0,'td_var'):.4f}")
     (out_dir/"REPORT.md").write_text("\n".join(lines))
 
+# ---------- Extras ----------
+def alpha_beta_heatmap(out_dir, seeds, params, drop_model):
+    import numpy as np, pandas as pd, matplotlib.pyplot as plt
+    alphas = np.linspace(0.2, 0.8, 7)
+    betas  = np.linspace(0.1, 0.7, 7)
+    base = np.mean([run_episode(s, "no_comm", 0.3, params, drop_model)["return"] for s in seeds])
+    heat = np.zeros((len(alphas), len(betas)))
+    for i,a in enumerate(alphas):
+        for j,b in enumerate(betas):
+            p = dict(params); p["alpha"]=float(a); p["beta"]=float(b)
+            r = np.mean([run_episode(s, "broadcast_gain", 0.3, p, drop_model)["return"] for s in seeds])
+            heat[i,j] = r - base  # improvement vs no_comm
+    fig, ax = plt.subplots(figsize=(5.6,4.6))
+    im = ax.imshow(heat.T, origin="lower", aspect="auto",
+                   extent=[alphas[0], alphas[-1], betas[0], betas[-1]])
+    ax.set_xlabel("α"); ax.set_ylabel("β"); ax.set_title("Return improvement over no_comm (drop=0.3)")
+    cbar = fig.colorbar(im); cbar.set_label("Δ Return")
+    fig.savefig(out_dir/"alpha_beta_heatmap_improvement.png", bbox_inches="tight", dpi=200)
+    fig.savefig(out_dir/"paper_figs_alpha_beta_heatmap_improvement.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+def radius_ablation(out_dir, seeds, params, drop_model):
+    import matplotlib.pyplot as plt, numpy as np
+    radii = [2,5,10,50]
+    rets = []
+    for r in radii:
+        p = dict(params); p["radius"]=int(r)
+        rets.append(np.mean([run_episode(s, "broadcast_gain", 0.3, p, drop_model)["return"] for s in seeds]))
+    fig, ax = plt.subplots(figsize=(5.6,3.8))
+    ax.plot(radii, rets, marker="o")
+    ax.set_xlabel("Neighbor radius (Manhattan)"); ax.set_ylabel("Episodic Return")
+    ax.set_title("Radius ablation (BG, drop=0.3)")
+    ax.grid(True, alpha=0.3)
+    fig.savefig(out_dir/"radius_ablation.png", bbox_inches="tight", dpi=200)
+    fig.savefig(out_dir/"paper_figs_radius_ablation.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+def one_byte_tradeoff(out_dir, seeds, params, drop_model):
+    import matplotlib.pyplot as plt, numpy as np
+    rets = []
+    payload = []
+    for ob in [True, False]:
+        p = dict(params); p["one_byte"]=bool(ob)
+        r = np.mean([run_episode(s, "broadcast_gain", 0.3, p, drop_model)["return"] for s in seeds])
+        rets.append(r); payload.append(1 if ob else 2)
+    fig, ax = plt.subplots(figsize=(5.2,3.8))
+    ax.plot(payload, rets, marker="o")
+    ax.set_xticks([1,2]); ax.set_xlabel("Payload bytes per agent @15 Hz")
+    ax.set_ylabel("Episodic Return"); ax.set_title("1‑byte vs 2‑byte trade‑off (BG, drop=0.3)")
+    ax.grid(True, alpha=0.3)
+    fig.savefig(out_dir/"one_byte_tradeoff.png", bbox_inches="tight", dpi=200)
+    fig.savefig(out_dir/"paper_figs_one_byte_tradeoff.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+def gain_distribution(out_dir, seeds, params, drop_model):
+    import matplotlib.pyplot as plt, numpy as np
+    res = run_episode(seeds[0], "broadcast_gain", 0.0, params, drop_model)
+    G = np.concatenate(res["g_history"])
+    fig, ax = plt.subplots(figsize=(5.2,3.8))
+    ax.hist(G, bins=30, density=True)
+    ax.set_xlabel("g"); ax.set_ylabel("Density"); ax.set_title("Broadcast‑Gain distribution (drop=0.0)")
+    fig.savefig(out_dir/"gain_distribution.png", bbox_inches="tight", dpi=200)
+    fig.savefig(out_dir/"paper_figs_gain_distribution.pdf", bbox_inches="tight")
+    plt.close(fig)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="quick", choices=["quick","sanity"])
+    ap.add_argument("--drop_model", default="bernoulli", choices=["bernoulli","burst"])
     ap.add_argument("--aggregate", action="store_true")
     ap.add_argument("--out", default="results/")
     args = ap.parse_args()

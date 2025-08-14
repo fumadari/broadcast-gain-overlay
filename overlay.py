@@ -13,7 +13,10 @@ class BroadcastGain:
     """
     def __init__(self, n_agents, rng, kappa=0.5, beta=0.2, alpha=0.5,
                  g_min=0.5, g_max=1.5, cycle_len=4, ttl_cycles=2,
-                 fuse="median", dropout=0.0, radius=5, one_byte=False):
+                 fuse="median", dropout=0.0, radius=5, one_byte=False,
+                 drop_model="bernoulli",
+                 ge_p_g2b=0.05, ge_p_b2g=0.20,  # state transition probs
+                 ge_pdrop_g=0.05, ge_pdrop_b=0.9):  # drop probs by state
         self.n = n_agents; self.rng = rng
         self.kappa = kappa; self.beta = beta; self.alpha = alpha
         self.g_min = g_min; self.g_max = g_max
@@ -22,6 +25,11 @@ class BroadcastGain:
         self.dropout = dropout
         self.radius = radius
         self.one_byte = one_byte
+        self.drop_model = drop_model
+        self.ge_p_g2b = ge_p_g2b
+        self.ge_p_b2g = ge_p_b2g
+        self.ge_pdrop_g = ge_pdrop_g
+        self.ge_pdrop_b = ge_pdrop_b
 
         self.DELTA = kappa / 127.0
         self.t = 0
@@ -30,6 +38,28 @@ class BroadcastGain:
         self.g = np.ones(self.n)
         # last received per-agent (store (p, tau, time_cycle))
         self.rx_p = [ [] for _ in range(self.n) ]
+        if self.drop_model == "burst":
+            # 0 = good, 1 = bad, per (receiver i, sender j)
+            self._ge_state = np.zeros((self.n, self.n), dtype=np.int8)
+
+    def _link_drops(self, i, j):
+        """Return True if packet j->i drops this cycle."""
+        if self.drop_model == "bernoulli":
+            return self.rng.rand() < self.dropout
+        # Gilbert-Elliott
+        s = int(self._ge_state[i, j])
+        # evolve state
+        if s == 0:  # good
+            if self.rng.rand() < self.ge_p_g2b:
+                s = 1
+        else:       # bad
+            if self.rng.rand() < self.ge_p_b2g:
+                s = 0
+        self._ge_state[i, j] = s
+        p = self.ge_pdrop_b if s == 1 else self.ge_pdrop_g
+        # modulate by global dropout knob for quick sweeps
+        p = min(1.0, p * max(1e-9, 1.0 * self.dropout / max(1e-9, 0.3)))
+        return self.rng.rand() < p
 
     def neighbors(self, positions):
         # positions: array of shape (n, 2) with (r,c)
@@ -80,8 +110,8 @@ class BroadcastGain:
         nbrs = self.neighbors(positions)
         for i in range(self.n):
             for j in nbrs[i]:
-                if self.rng.rand() < self.dropout:
-                    continue  # dropped
+                if self._link_drops(i, j):
+                    continue  # dropped packet
                 # deliver packet j -> i
                 if self.one_byte:
                     self.rx_p[i].append( (j, np.array([packets[j,0]]), ncycle) )
